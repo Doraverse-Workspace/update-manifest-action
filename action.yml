@@ -1,2 +1,86 @@
-name: 'update-manifest-action'
-description: 'Reusable action for update-manifest-action'
+name: 'Update Kubernetes Manifest'
+description: 'Updates image tags in Kubernetes manifest and commits changes'
+inputs:
+  manifest_repo:
+    description: 'Manifest repository (e.g., owner/repo)'
+    required: true
+  manifest_ref:
+    description: 'Manifest repository branch'
+    required: true
+  manifest_path:
+    description: 'Path to manifest file (or comma-separated paths)'
+    required: true
+  service_name:
+    description: 'Service name in manifest'
+    required: true
+  image_tag:
+    description: 'New image tag'
+    required: true
+  git_pat:
+    description: 'GitHub PAT for manifest repo access'
+    required: true
+  commit_message:
+    description: 'Git commit message'
+    required: false
+    default: 'Update image tags'
+  migrate_service_name:
+    description: 'Migration service name (optional, only update migrate section if provided)'
+    required: false
+runs:
+  using: 'composite'
+  steps:
+    - name: Checkout manifest repository
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.manifest_repo }}
+        path: manifests
+        token: ${{ inputs.git_pat }}
+        ref: ${{ inputs.manifest_ref }}
+
+    - name: Update image tags
+      shell: bash
+      run: |
+        cd manifests
+        IFS=',' read -ra MANIFEST_PATHS <<< "${{ inputs.manifest_path }}"
+        for path in "${MANIFEST_PATHS[@]}"; do
+          trimmed_path=$(echo "$path" | xargs)
+          yq eval '.services."${{ inputs.service_name }}".image.tag = "${{ inputs.image_tag }}"' -i "$trimmed_path"
+          if [ -n "${{ inputs.migrate_service_name }}" ]; then
+            yq eval '.migrate.${{ inputs.migrate_service_name }}.image.tag = "${{ inputs.image_tag }}"' -i "$trimmed_path"
+          fi
+          echo "✅ Updated: $trimmed_path"
+        done
+
+    - name: Commit and push with retry
+      shell: bash
+      run: |
+        cd manifests
+        git config --global user.name 'github-actions'
+        git config --global user.email 'github-actions@github.com'
+        git add .
+        git commit -m "${{ inputs.commit_message }}"
+
+        # Retry logic with pull-rebase to handle concurrent pushes
+        max_retries=5
+        retry_count=0
+
+        while [ $retry_count -lt $max_retries ]; do
+          if git push; then
+            echo "✅ Push successful"
+            exit 0
+          else
+            echo "⚠️ Push failed, attempt $((retry_count + 1))/$max_retries"
+            retry_count=$((retry_count + 1))
+
+            if [ $retry_count -lt $max_retries ]; then
+              # Pull with rebase to get remote changes
+              git pull --rebase origin ${{ inputs.manifest_ref }}
+
+              # Small random delay to avoid thundering herd
+              sleep $((RANDOM % 5 + 1))
+            fi
+          fi
+        done
+
+        echo "❌ Failed to push after $max_retries attempts"
+        exit 1
