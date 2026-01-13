@@ -24,8 +24,9 @@ inputs:
     required: false
     default: 'Update image tags'
   migrate_service_name:
-    description: 'Migration service name (optional, only update migrate section if provided)'
+    description: 'Migration service name (optional). Use "default" for migrate.image.tag structure, or specific name for migrate.<name>.image.tag'
     required: false
+    default: ''
 runs:
   using: 'composite'
   steps:
@@ -64,8 +65,15 @@ runs:
 
           # Update migrate image tag if migrate service name provided
           if [ -n "$MIGRATE_SERVICE_NAME" ]; then
-            echo "   Migrate service: $MIGRATE_SERVICE_NAME"
-            yq eval ".migrate.$MIGRATE_SERVICE_NAME.image.tag = \"$IMAGE_TAG\"" -i "$trimmed_path"
+            if [ "$MIGRATE_SERVICE_NAME" = "default" ]; then
+              # Support old structure: migrate.image.tag
+              echo "   Migrate: default structure (migrate.image.tag)"
+              yq eval ".migrate.image.tag = \"$IMAGE_TAG\"" -i "$trimmed_path"
+            else
+              # Support new structure: migrate.<serviceName>.image.tag
+              echo "   Migrate service: $MIGRATE_SERVICE_NAME"
+              yq eval ".migrate.$MIGRATE_SERVICE_NAME.image.tag = \"$IMAGE_TAG\"" -i "$trimmed_path"
+            fi
           fi
 
           echo "✅ Updated: $trimmed_path"
