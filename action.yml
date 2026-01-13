@@ -41,15 +41,40 @@ runs:
       shell: bash
       run: |
         cd manifests
+        SERVICE_NAME="${{ inputs.service_name }}"
+        IMAGE_TAG="${{ inputs.image_tag }}"
+        MIGRATE_SERVICE_NAME="${{ inputs.migrate_service_name }}"
+
         IFS=',' read -ra MANIFEST_PATHS <<< "${{ inputs.manifest_path }}"
         for path in "${MANIFEST_PATHS[@]}"; do
           trimmed_path=$(echo "$path" | xargs)
-          yq eval '.services."${{ inputs.service_name }}".image.tag = "${{ inputs.image_tag }}"' -i "$trimmed_path"
-          if [ -n "${{ inputs.migrate_service_name }}" ]; then
-            yq eval '.migrate.${{ inputs.migrate_service_name }}.image.tag = "${{ inputs.image_tag }}"' -i "$trimmed_path"
+
+          # Check if file exists
+          if [ ! -f "$trimmed_path" ]; then
+            echo "❌ File not found: $trimmed_path"
+            exit 1
           fi
+
+          echo "📝 Updating $trimmed_path"
+          echo "   Service: $SERVICE_NAME"
+          echo "   Tag: $IMAGE_TAG"
+
+          # Update service image tag
+          yq eval ".services.\"$SERVICE_NAME\".image.tag = \"$IMAGE_TAG\"" -i "$trimmed_path"
+
+          # Update migrate image tag if migrate service name provided
+          if [ -n "$MIGRATE_SERVICE_NAME" ]; then
+            echo "   Migrate service: $MIGRATE_SERVICE_NAME"
+            yq eval ".migrate.$MIGRATE_SERVICE_NAME.image.tag = \"$IMAGE_TAG\"" -i "$trimmed_path"
+          fi
+
           echo "✅ Updated: $trimmed_path"
         done
+
+        # Show git diff to verify changes
+        echo ""
+        echo "📋 Changes made:"
+        git diff
 
     - name: Commit and push with retry
       shell: bash
@@ -58,6 +83,14 @@ runs:
         git config --global user.name 'github-actions'
         git config --global user.email 'github-actions@github.com'
         git add .
+
+        # Check if there are changes to commit
+        if git diff --cached --quiet; then
+          echo "⚠️ No changes to commit - manifest already up to date"
+          exit 0
+        fi
+
+        git status
         git commit -m "${{ inputs.commit_message }}"
 
         # Retry logic with pull-rebase to handle concurrent pushes
